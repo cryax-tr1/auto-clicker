@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import json
 import math
+import os
 import queue
 import re
+import subprocess
 import sys
 import threading
 import time
@@ -32,7 +34,7 @@ DEFAULT_INSTALL_DIR = (
     if sys.platform.startswith("win")
     else Path.home() / ".auto-clicker"
 )
-APP_VERSION = "1.0.2"
+APP_VERSION = "1.0.3"
 GITHUB_REPOSITORY = "cryax-tr1/auto-clicker"
 LATEST_RELEASE_API = (
     f"https://api.github.com/repos/{GITHUB_REPOSITORY}/releases/latest"
@@ -1230,6 +1232,27 @@ class AutoClickerApp:
             command=self.stop_all,
         )
         self.stop_button.grid(row=1, column=1, sticky="ew", padx=(5, 0), pady=3)
+        self.recordings_folder_button = ttk.Button(
+            buttons,
+            text="Kayıt klasörünü aç",
+            command=self.open_recordings_directory,
+        )
+        self.recordings_folder_button.grid(row=2, column=0, sticky="ew", padx=(0, 5), pady=3)
+        self.open_selected_button = ttk.Button(
+            buttons,
+            text="Seçileni aç",
+            command=self.open_selected_recording,
+            state="disabled",
+        )
+        self.open_selected_button.grid(row=2, column=1, sticky="ew", padx=(5, 0), pady=3)
+        self.delete_selected_button = ttk.Button(
+            buttons,
+            text="Seçileni sil",
+            style="Stop.TButton",
+            command=self.delete_selected_recording,
+            state="disabled",
+        )
+        self.delete_selected_button.grid(row=3, column=0, columnspan=2, sticky="ew", pady=(3, 0))
 
         click_card = self._create_hud_panel(
             library_column,
@@ -1816,6 +1839,8 @@ class AutoClickerApp:
         enabled = path is not None
         self.play_button.configure(state="normal" if enabled else "disabled")
         self.loop_button.configure(state="normal" if enabled else "disabled")
+        self.open_selected_button.configure(state="normal" if enabled else "disabled")
+        self.delete_selected_button.configure(state="normal" if enabled else "disabled")
         self.selected_macro_event_count = None
         if path is not None:
             try:
@@ -1825,6 +1850,71 @@ class AutoClickerApp:
             if isinstance(data, dict) and isinstance(data.get("events"), list):
                 self.selected_macro_event_count = len(data["events"])
         self._update_statistics_values()
+
+    def _open_path(self, path: Path | str) -> None:
+        target = Path(path)
+        if target.exists() and target.is_dir():
+            if sys.platform.startswith("win"):
+                os.startfile(str(target))
+            else:
+                subprocess.Popen(["xdg-open", str(target)])
+            return
+        if target.exists() and target.is_file():
+            if sys.platform.startswith("win"):
+                os.startfile(str(target))
+            elif sys.platform == "darwin":
+                subprocess.Popen(["open", str(target)])
+            else:
+                subprocess.Popen(["xdg-open", str(target)])
+            return
+        target.parent.mkdir(parents=True, exist_ok=True)
+        if target.suffix:
+            target.touch(exist_ok=True)
+            if sys.platform.startswith("win"):
+                os.startfile(str(target))
+            elif sys.platform == "darwin":
+                subprocess.Popen(["open", str(target)])
+            else:
+                subprocess.Popen(["xdg-open", str(target)])
+        else:
+            if sys.platform.startswith("win"):
+                os.startfile(str(target))
+            else:
+                subprocess.Popen(["xdg-open", str(target)])
+
+    def open_recordings_directory(self) -> None:
+        RECORDINGS_DIR.mkdir(parents=True, exist_ok=True)
+        self._open_path(RECORDINGS_DIR)
+
+    def open_selected_recording(self) -> None:
+        path = self._selected_path()
+        if path is None:
+            self.status_var.set("Önce listeden bir kayıt seç.")
+            return
+        self._open_path(path)
+
+    def delete_selected_recording(self) -> None:
+        path = self._selected_path()
+        if path is None:
+            self.status_var.set("Önce silinecek bir kayıt seç.")
+            return
+        if not messagebox.askyesno(
+            "Kaydı sil",
+            f"{path.name} dosyasını silmek istediğine emin misin?",
+            parent=self.root,
+        ):
+            return
+        try:
+            path.unlink()
+        except OSError as exc:
+            messagebox.showerror(
+                "Kayıt silinemedi",
+                f"{path.name} silinemedi:\n{exc}",
+                parent=self.root,
+            )
+            return
+        self._refresh_recording_list()
+        self.status_var.set(f"Kayıt silindi: {path.name}")
 
     def toggle_recording(self) -> None:
         if self.mouse_listener is not None or self.keyboard_listener is not None:
