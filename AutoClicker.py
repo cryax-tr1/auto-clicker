@@ -27,6 +27,8 @@ APP_DIR = (
     if getattr(sys, "frozen", False)
     else Path(__file__).resolve().parent
 )
+RESOURCE_DIR = Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parent))
+APP_ICON = RESOURCE_DIR / "makro.ico"
 RECORDINGS_DIR = APP_DIR / "recordings"
 SETTINGS_FILE = APP_DIR / "settings.json"
 DEFAULT_INSTALL_DIR = (
@@ -34,7 +36,8 @@ DEFAULT_INSTALL_DIR = (
     if sys.platform.startswith("win")
     else Path.home() / ".auto-clicker"
 )
-APP_VERSION = "1.0.3"
+APP_NAME = "PulseMacro Studio"
+APP_VERSION = "1.1.1"
 GITHUB_REPOSITORY = "cryax-tr1/auto-clicker"
 LATEST_RELEASE_API = (
     f"https://api.github.com/repos/{GITHUB_REPOSITORY}/releases/latest"
@@ -119,10 +122,23 @@ def _save_settings(data: dict[str, Any]) -> None:
     )
 
 
+def _parse_playback_options(speed_text: str, repeat_text: str) -> tuple[float, int]:
+    try:
+        speed = float(speed_text.strip().lower().removesuffix("x"))
+        repeats = int(repeat_text.strip())
+    except ValueError as exc:
+        raise ValueError("Hız ve tekrar alanlarını kontrol et.") from exc
+    if not math.isfinite(speed) or not 0.25 <= speed <= 2:
+        raise ValueError("Oynatma hızı 0.25x ile 2x arasında olmalı.")
+    if not 0 <= repeats <= 10000:
+        raise ValueError("Tekrar sayısı 0 ile 10000 arasında olmalı.")
+    return speed, repeats
+
+
 class InstallerWizard:
     def __init__(self, root: tk.Tk | None = None) -> None:
         self.root = root or tk.Tk()
-        self.root.title("Makro - Kurulum Sihirbazı")
+        self.root.title(f"{APP_NAME} - Kurulum Sihirbazı")
         self.root.geometry("720x700")
         self.root.minsize(680, 620)
         self.root.configure(bg="#07131d")
@@ -145,7 +161,7 @@ class InstallerWizard:
 
         title = ttk.Label(
             main,
-            text="Makro Kurulum",
+            text=f"{APP_NAME} Kurulum",
             font=("Segoe UI Semibold", 22),
             foreground="#e9f7ff",
             background="#07131d",
@@ -311,7 +327,8 @@ class InstallerWizard:
 class AutoClickerApp:
     def __init__(self, root: tk.Tk) -> None:
         self.root = root
-        self.root.title("Makro")
+        self.root.title(APP_NAME)
+        self.root.iconbitmap(str(APP_ICON))
         self.root.geometry("1180x800")
         self.root.minsize(1050, 720)
         self.root.configure(bg="#07131d")
@@ -340,6 +357,9 @@ class AutoClickerApp:
         self.play_started = 0.0
         self.play_index = 0
         self.play_loop = False
+        self.playback_speed = 1.0
+        self.play_repeat_limit: int | None = None
+        self.play_completed_loops = 0
         self.held_keys: dict[str, Key | KeyCode] = {}
         self.held_buttons: dict[str, Button] = {}
 
@@ -353,6 +373,7 @@ class AutoClickerApp:
         self.selected_macro_event_count: int | None = None
 
         self.hotkeys = self._load_hotkeys()
+        self._load_playback_preferences()
         self._configure_style()
         self._build_ui()
         self.root.bind("<Configure>", self._update_window_bounds)
@@ -425,7 +446,7 @@ class AutoClickerApp:
                         url = asset.get("browser_download_url")
                         if (
                             isinstance(name, str)
-                            and name.startswith("Makro-Setup-")
+                            and name.startswith("PulseMacro-Setup-")
                             and name.endswith(".exe")
                             and isinstance(url, str)
                             and url.startswith(expected_download_prefix)
@@ -458,15 +479,15 @@ class AutoClickerApp:
             should_open = messagebox.askyesno(
                 "Güncelleme bulundu",
                 (
-                    f"Makro için yeni sürüm ({version}) yayınlandı.\n"
+                    f"{APP_NAME} için yeni sürüm ({version}) yayınlandı.\n"
                     f"Yüklü sürüm: {APP_VERSION}\n\n"
                     f"Çalışan programın konumu: {APP_DIR}\n\n"
                     + (
                         "En yeni kurulum dosyası açılacak. İndirme tamamlanınca "
-                        "Makro-Setup dosyasını çalıştırıp mevcut sürümün üzerine "
+                        "PulseMacro-Setup dosyasını çalıştırıp mevcut sürümün üzerine "
                         "kur.\n\n"
                         if is_installer
-                        else "GitHub sürüm sayfası açılacak. En yeni Makro-Setup "
+                        else "GitHub sürüm sayfası açılacak. En yeni PulseMacro-Setup "
                         "dosyasını indirip çalıştır.\n\n"
                     )
                     + "Devam edilsin mi?"
@@ -503,6 +524,42 @@ class AutoClickerApp:
         if len(set(assigned_hotkeys)) != len(assigned_hotkeys):
             hotkeys = DEFAULT_HOTKEYS.copy()
         return hotkeys
+
+    def _load_playback_preferences(self) -> None:
+        saved = _load_settings().get("playback", {})
+        if not isinstance(saved, dict):
+            saved = {}
+        speed = saved.get("speed", 1.0)
+        repeats = saved.get("repeats", 0)
+        if (
+            isinstance(speed, (int, float))
+            and not isinstance(speed, bool)
+            and math.isfinite(speed)
+            and 0.25 <= speed <= 2
+        ):
+            self.playback_speed_var = tk.StringVar(value=f"{speed:g}x")
+        else:
+            self.playback_speed_var = tk.StringVar(value="1x")
+        if (
+            isinstance(repeats, int)
+            and not isinstance(repeats, bool)
+            and 0 <= repeats <= 10000
+        ):
+            self.play_repeat_var = tk.StringVar(value=str(repeats))
+        else:
+            self.play_repeat_var = tk.StringVar(value="0")
+
+    def _save_playback_preferences(self, speed: float, repeats: int) -> None:
+        settings = _load_settings()
+        settings["playback"] = {"speed": speed, "repeats": repeats}
+        try:
+            _save_settings(settings)
+        except OSError as exc:
+            messagebox.showerror(
+                "Oynatma ayarları kaydedilemedi",
+                f"Ayarlar bu oturumda kullanılacak, ancak dosyaya yazılamadı.\n{exc}",
+                parent=self.root,
+            )
 
     @staticmethod
     def _hotkey_display(name: str) -> str:
@@ -543,7 +600,7 @@ class AutoClickerApp:
             background="#0b1b29",
             foreground="#9eb6c6",
             anchor="w",
-            padding=(12, 12),
+            padding=(14, 11),
             font=("Segoe UI Semibold", 10),
         )
         style.map(
@@ -553,16 +610,16 @@ class AutoClickerApp:
         )
         style.configure(
             "NavActive.TButton",
-            background="#123849",
-            foreground="#55e4ff",
+            background="#302448",
+            foreground="#d8b4fe",
             anchor="w",
-            padding=(12, 12),
+            padding=(14, 11),
             font=("Segoe UI Semibold", 10),
         )
         style.map(
             "NavActive.TButton",
-            background=[("active", "#17485c")],
-            foreground=[("active", "#8af0ff")],
+            background=[("active", "#453264")],
+            foreground=[("active", "#f0d9ff")],
         )
         style.configure(
             "TLabel",
@@ -604,7 +661,7 @@ class AutoClickerApp:
             "Title.TLabel",
             background="#07131d",
             foreground="#f5f7ff",
-            font=("Segoe UI Semibold", 26),
+            font=("Segoe UI Semibold", 28),
         )
         style.configure(
             "Subtitle.TLabel",
@@ -615,21 +672,33 @@ class AutoClickerApp:
         style.configure(
             "Eyebrow.TLabel",
             background="#07131d",
-            foreground="#31e6ff",
-            font=("Segoe UI Semibold", 9),
+            foreground="#d8a7ff",
+            font=("Segoe UI Semibold", 11),
         )
         style.configure(
             "HeaderLink.TLabel",
             background="#07131d",
-            foreground="#75eaff",
-            font=("Segoe UI", 9, "underline"),
+            foreground="#69f0d1",
+            font=("Segoe UI Semibold", 11, "underline"),
         )
         style.configure(
             "BrandMark.TLabel",
+            background="#392655",
+            foreground="#f6c85f",
+            font=("Segoe UI Semibold", 18),
+            padding=(14, 9),
+        )
+        style.configure(
+            "Creator.TLabel",
             background="#102333",
-            foreground="#31e6ff",
-            font=("Segoe UI Semibold", 15),
-            padding=(12, 8),
+            foreground="#f6c85f",
+            font=("Segoe UI Semibold", 13),
+        )
+        style.configure(
+            "DiscordCTA.TLabel",
+            background="#102333",
+            foreground="#69f0d1",
+            font=("Segoe UI Semibold", 12, "underline"),
         )
         style.configure(
             "HeaderBadge.TLabel",
@@ -655,7 +724,7 @@ class AutoClickerApp:
             "Section.TLabel",
             background="#0c1b28",
             foreground="#f5f7ff",
-            font=("Segoe UI Semibold", 14),
+            font=("Segoe UI Semibold", 15),
         )
         style.configure(
             "Hint.TLabel",
@@ -679,12 +748,26 @@ class AutoClickerApp:
         )
         style.configure(
             "TButton",
-            font=("Segoe UI Semibold", 10),
-            padding=(13, 10),
+            font=("Segoe UI Semibold", 9),
+            padding=(12, 9),
             background="#263248",
             foreground="#edf2ff",
             borderwidth=0,
             focusthickness=0,
+        )
+        style.configure(
+            "Quiet.TButton",
+            font=("Segoe UI Semibold", 9),
+            padding=(10, 8),
+            background="#17283a",
+            foreground="#bdc9dc",
+            borderwidth=0,
+            focusthickness=0,
+        )
+        style.map(
+            "Quiet.TButton",
+            background=[("pressed", "#27384e"), ("active", "#22364b")],
+            foreground=[("active", "#f3f6ff")],
         )
         style.map(
             "TButton",
@@ -888,7 +971,7 @@ class AutoClickerApp:
         header.pack(fill="x", pady=(0, 13))
         brand = ttk.Frame(header, style="Header.TFrame")
         brand.pack(side="left", fill="x", expand=True)
-        ttk.Label(brand, text="✦", style="BrandMark.TLabel").pack(
+        ttk.Label(brand, text="M", style="BrandMark.TLabel").pack(
             side="left", padx=(0, 14)
         )
         title_block = ttk.Frame(brand, style="Header.TFrame")
@@ -896,7 +979,7 @@ class AutoClickerApp:
         ttk.Label(
             title_block, text="Developed by Aras", style="Eyebrow.TLabel"
         ).pack(anchor="w")
-        ttk.Label(title_block, text="MAKRO", style="Title.TLabel").pack(
+        ttk.Label(title_block, text="PULSEMACRO", style="Title.TLabel").pack(
             anchor="w", pady=(1, 0)
         )
         discord_link = ttk.Label(
@@ -1007,40 +1090,42 @@ class AutoClickerApp:
 
     def _build_dashboard_page(self, page: ttk.Frame) -> None:
         hero = self._create_hud_panel(
-            page, "CONTROL CENTER // OPERATOR CONSOLE", height=220, expand=False
+            page, "CONTROL CENTER // OPERATOR CONSOLE", height=240, expand=False
         )
         ttk.Label(
             hero, text="Kontrol Merkezi", style="Section.TLabel"
         ).pack(anchor="w", pady=(0, 5))
         ttk.Label(
             hero,
-            text="Makrolarını yönet, iş akışını kaydet ve tıklama motorunu çalıştır.",
+            text="Makrolarını kaydet, hızını ayarla ve istediğin kadar tekrarla.",
             style="Hint.TLabel",
         ).pack(anchor="w", pady=(0, 17))
         actions = ttk.Frame(hero, style="Card.TFrame")
         actions.pack(fill="x")
+        actions.columnconfigure(0, weight=1, uniform="dashboard-action")
+        actions.columnconfigure(1, weight=1, uniform="dashboard-action")
         ttk.Button(
             actions,
             text="●  KAYDI BAŞLAT",
             style="Accent.TButton",
             command=self.toggle_recording,
-        ).pack(side="left", padx=(0, 8))
+        ).grid(row=0, column=0, sticky="ew", padx=(0, 5), pady=3)
         ttk.Button(
             actions,
-            text="▶  SEÇİLİ MAKROYU OYNAT",
+            text="▶  SEÇİLİYİ OYNAT",
             command=self.play_selected_once,
-        ).pack(side="left", padx=8)
+        ).grid(row=0, column=1, sticky="ew", padx=(5, 0), pady=3)
         ttk.Button(
             actions,
             text="↻  SÜREKLİ TIKLAMA",
             command=self.toggle_clicking,
-        ).pack(side="left", padx=8)
+        ).grid(row=1, column=0, sticky="ew", padx=(0, 5), pady=3)
         ttk.Button(
             actions,
             text="■  TÜMÜNÜ DURDUR",
             style="Stop.TButton",
             command=self.stop_all,
-        ).pack(side="right", padx=(8, 0))
+        ).grid(row=1, column=1, sticky="ew", padx=(5, 0), pady=3)
 
         lower = ttk.Frame(page, style="Header.TFrame")
         lower.pack(fill="both", expand=True, pady=(12, 0))
@@ -1147,7 +1232,7 @@ class AutoClickerApp:
         system_column.pack_propagate(False)
 
         card = self._create_hud_panel(
-            library_column, "MODULE 01 // MACRO MEMORY", height=360
+            library_column, "MODULE 01 // MACRO MEMORY", height=430
         )
         header = ttk.Frame(card, style="Card.TFrame")
         header.pack(fill="x")
@@ -1160,9 +1245,28 @@ class AutoClickerApp:
         )
         ttk.Label(
             card,
-            text="Bir kayıt seçip oynat. Yeni makrolar otomatik olarak kütüphaneye eklenir.",
+            text="Makro hızını ayarla, belirli sayıda tekrarla veya 0 ile sürekli çalıştır.",
             style="Hint.TLabel",
         ).pack(anchor="w", pady=(5, 14))
+
+        playback_controls = ttk.Frame(card, style="Card.TFrame")
+        playback_controls.pack(fill="x", pady=(0, 10))
+        ttk.Label(
+            playback_controls, text="Hız", style="Card.TLabel"
+        ).pack(side="left")
+        ttk.Combobox(
+            playback_controls,
+            textvariable=self.playback_speed_var,
+            values=("0.25x", "0.5x", "0.75x", "1x", "1.25x", "1.5x", "2x"),
+            state="readonly",
+            width=7,
+        ).pack(side="left", padx=(7, 18))
+        ttk.Label(
+            playback_controls, text="Tekrar (0 = sınırsız)", style="Card.TLabel"
+        ).pack(side="left")
+        ttk.Entry(
+            playback_controls, textvariable=self.play_repeat_var, width=8
+        ).pack(side="left", padx=(7, 0))
 
         list_frame = ttk.Frame(card, style="Card.TFrame")
         list_frame.pack(fill="both", expand=True, pady=(0, 2))
@@ -1200,59 +1304,71 @@ class AutoClickerApp:
         self.recording_files: list[Path] = []
 
         ttk.Separator(card, orient="horizontal").pack(fill="x", pady=(14, 13))
-        buttons = ttk.Frame(card, style="Card.TFrame")
-        buttons.pack(fill="x")
-        buttons.columnconfigure(0, weight=1, uniform="macro-action")
-        buttons.columnconfigure(1, weight=1, uniform="macro-action")
+        ttk.Label(
+            card, text="ANA İŞLEMLER", style="CardEyebrow.TLabel"
+        ).pack(anchor="w", pady=(0, 5))
+        primary_actions = ttk.Frame(card, style="Card.TFrame")
+        primary_actions.pack(fill="x")
+        primary_actions.columnconfigure(0, weight=1, uniform="macro-primary")
+        primary_actions.columnconfigure(1, weight=1, uniform="macro-primary")
         self.record_button = ttk.Button(
-            buttons,
+            primary_actions,
             text=f"Kaydı başlat ({self._hotkey_display(self.hotkeys['record'])})",
             style="Accent.TButton",
             command=self.toggle_recording,
         )
         self.record_button.grid(row=0, column=0, sticky="ew", padx=(0, 5), pady=3)
         self.play_button = ttk.Button(
-            buttons,
+            primary_actions,
             text=f"Seçileni oynat ({self._hotkey_display(self.hotkeys['play_once'])})",
             command=self.play_selected_once,
             state="disabled",
         )
         self.play_button.grid(row=0, column=1, sticky="ew", padx=(5, 0), pady=3)
         self.loop_button = ttk.Button(
-            buttons,
+            primary_actions,
             text=f"Tekrarı başlat ({self._hotkey_display(self.hotkeys['play_loop'])})",
             command=self.toggle_playback_loop,
             state="disabled",
         )
         self.loop_button.grid(row=1, column=0, sticky="ew", padx=(0, 5), pady=3)
         self.stop_button = ttk.Button(
-            buttons,
+            primary_actions,
             text=f"Durdur ({self._hotkey_display(self.hotkeys['stop'])})",
             style="Stop.TButton",
             command=self.stop_all,
         )
         self.stop_button.grid(row=1, column=1, sticky="ew", padx=(5, 0), pady=3)
+        ttk.Label(
+            card, text="KÜTÜPHANE İŞLEMLERİ", style="CardEyebrow.TLabel"
+        ).pack(anchor="w", pady=(9, 3))
+        library_actions = ttk.Frame(card, style="Card.TFrame")
+        library_actions.pack(fill="x")
+        for column in range(3):
+            library_actions.columnconfigure(column, weight=1, uniform="macro-tools")
         self.recordings_folder_button = ttk.Button(
-            buttons,
-            text="Kayıt klasörünü aç",
+            library_actions,
+            text="Klasörü aç",
+            style="Quiet.TButton",
             command=self.open_recordings_directory,
         )
-        self.recordings_folder_button.grid(row=2, column=0, sticky="ew", padx=(0, 5), pady=3)
+        self.recordings_folder_button.grid(row=0, column=0, sticky="ew", padx=(0, 4), pady=3)
         self.open_selected_button = ttk.Button(
-            buttons,
-            text="Seçileni aç",
+            library_actions,
+            text="Dosyayı aç",
+            style="Quiet.TButton",
             command=self.open_selected_recording,
             state="disabled",
         )
-        self.open_selected_button.grid(row=2, column=1, sticky="ew", padx=(5, 0), pady=3)
+        self.open_selected_button.grid(row=0, column=1, sticky="ew", padx=4, pady=3)
         self.delete_selected_button = ttk.Button(
-            buttons,
-            text="Seçileni sil",
+            library_actions,
+            text="Kaydı sil",
             style="Stop.TButton",
             command=self.delete_selected_recording,
             state="disabled",
         )
-        self.delete_selected_button.grid(row=3, column=0, columnspan=2, sticky="ew", pady=(3, 0))
+        self.delete_selected_button.grid(row=0, column=2, sticky="ew", padx=(4, 0), pady=3)
 
         click_card = self._create_hud_panel(
             library_column,
@@ -1455,7 +1571,7 @@ class AutoClickerApp:
             page, "MAKRO // SYSTEM INFORMATION", height=540
         )
         ttk.Label(
-            panel, text="Makro", style="Section.TLabel"
+            panel, text=APP_NAME, style="Section.TLabel"
         ).pack(anchor="w", pady=(0, 6))
         ttk.Label(
             panel,
@@ -1474,11 +1590,23 @@ class AutoClickerApp:
             ttk.Label(row, text=description, style="RowHint.TLabel").pack(
                 anchor="w", pady=(3, 0)
             )
+        credit_card = ttk.Frame(
+            panel, style="HotkeyRow.TFrame", padding=(12, 10)
+        )
+        credit_card.pack(fill="x", pady=(20, 0))
         ttk.Label(
-            panel,
+            credit_card,
             text=f"DEVELOPED BY ARAS   /   VERSION {APP_VERSION}",
-            style="Telemetry.TLabel",
-        ).pack(anchor="w", pady=(16, 0))
+            style="Creator.TLabel",
+        ).pack(anchor="w", pady=(0, 8))
+        discord_link = ttk.Label(
+            credit_card,
+            text=f"Discord topluluğuna katıl  ↗  {DISCORD_INVITE_URL}",
+            style="DiscordCTA.TLabel",
+            cursor="hand2",
+        )
+        discord_link.pack(anchor="w")
+        discord_link.bind("<Button-1>", self._open_discord)
 
     def _update_statistics_values(self) -> None:
         if not hasattr(self, "statistics_vars"):
@@ -2216,8 +2344,10 @@ class AutoClickerApp:
                 f"Oynatmadan önce {self.hotkeys['record']} ile kaydı bitir."
             )
             return
-        if self._load_selected_macro():
-            self._start_playback(loop=False)
+        options = self._get_playback_options()
+        if options is not None and self._load_selected_macro():
+            speed, repeats = options
+            self._start_playback(loop=False, speed=speed, repeats=repeats)
 
     def toggle_playback_loop(self) -> None:
         if self.play_loop:
@@ -2228,19 +2358,41 @@ class AutoClickerApp:
                 f"Oynatmadan önce {self.hotkeys['record']} ile kaydı bitir."
             )
             return
-        if self._load_selected_macro():
-            self._start_playback(loop=True)
+        options = self._get_playback_options()
+        if options is not None and self._load_selected_macro():
+            speed, repeats = options
+            self._start_playback(loop=True, speed=speed, repeats=repeats)
 
-    def _start_playback(self, loop: bool) -> None:
+    def _get_playback_options(self) -> tuple[float, int] | None:
+        try:
+            options = _parse_playback_options(
+                self.playback_speed_var.get(), self.play_repeat_var.get()
+            )
+        except ValueError as exc:
+            messagebox.showerror(
+                "Oynatma ayarları geçersiz",
+                str(exc),
+                parent=self.root,
+            )
+            return None
+        return options
+
+    def _start_playback(
+        self, loop: bool, *, speed: float, repeats: int
+    ) -> None:
         self.stop_clicking()
         self.stop_playback()
         self.play_token += 1
         self.play_events = list(self.events)
+        self.playback_speed = speed
+        self.play_repeat_limit = repeats if loop and repeats else None
+        self.play_completed_loops = 0
         self.play_duration = max(
             self.recording_duration,
             max(float(event["time"]) for event in self.play_events),
         )
         self.play_loop = loop
+        self._save_playback_preferences(speed, repeats)
         self.play_index = 0
         self.play_started = time.perf_counter()
         self._update_hotkey_button_labels()
@@ -2260,7 +2412,16 @@ class AutoClickerApp:
             if not self.play_loop:
                 self._finish_playback("Makro oynatma tamamlandı.")
                 return
-            loop_end = self.play_started + self.play_duration
+            self.play_completed_loops += 1
+            if (
+                self.play_repeat_limit is not None
+                and self.play_completed_loops >= self.play_repeat_limit
+            ):
+                self._finish_playback(
+                    f"Makro {self.play_completed_loops} tekrar sonunda tamamlandı."
+                )
+                return
+            loop_end = self.play_started + self.play_duration / self.playback_speed
             self.root.after(
                 max(0, round((loop_end - time.perf_counter()) * 1000)),
                 self._begin_next_play_loop,
@@ -2268,7 +2429,7 @@ class AutoClickerApp:
             )
             return
         event = self.play_events[self.play_index]
-        due = self.play_started + float(event["time"])
+        due = self.play_started + float(event["time"]) / self.playback_speed
         self.root.after(
             max(0, round((due - time.perf_counter()) * 1000)),
             self._play_next_event,
@@ -2358,6 +2519,14 @@ class AutoClickerApp:
         self._update_hotkey_button_labels()
         self.status_var.set(status)
 
+    @staticmethod
+    def _click_mouse_button(button: Button, *, hold_ms: int = 20) -> None:
+        controller = mouse.Controller()
+        controller.press(button)
+        if hold_ms > 0:
+            time.sleep(hold_ms / 1000.0)
+        controller.release(button)
+
     def toggle_clicking(self) -> None:
         if self.click_loop:
             self.stop_clicking()
@@ -2403,7 +2572,7 @@ class AutoClickerApp:
         ):
             return
         try:
-            mouse.Controller().click(self.click_button)
+            self._click_mouse_button(self.click_button, hold_ms=20)
         except Exception as exc:
             self.stop_clicking()
             if self.root.winfo_exists():

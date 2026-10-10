@@ -15,8 +15,8 @@ if (-not $compiler) {
 }
 
 $scriptDirectory = Split-Path -Parent $MyInvocation.MyCommand.Path
-$distExePath = Join-Path $scriptDirectory "dist\AutoClicker.exe"
-$exePath = Join-Path $scriptDirectory "release\AutoClicker.exe"
+$distExePath = Join-Path $scriptDirectory "dist\PulseMacro.exe"
+$exePath = Join-Path $scriptDirectory "release\PulseMacro.exe"
 if (-not (Test-Path $distExePath)) {
     throw "PyInstaller output was not found: $distExePath. Build AutoClicker.spec first."
 }

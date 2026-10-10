@@ -1,5 +1,5 @@
-#define AppName "Makro"
-#define AppVersion "1.0.3"
+#define AppName "PulseMacro Studio"
+#define AppVersion "1.1.1"
 #define AppPublisher "Aras"
 
 [Setup]
@@ -9,10 +9,10 @@ AppVersion={#AppVersion}
 AppPublisher={#AppPublisher}
 DefaultDirName={localappdata}\Programs\Makro
 DefaultGroupName={#AppName}
-UninstallDisplayIcon={app}\AutoClicker.exe
+UninstallDisplayIcon={app}\PulseMacro.exe
 LicenseFile=LICENSE
 OutputDir=release
-OutputBaseFilename=Makro-Setup-{#AppVersion}
+OutputBaseFilename=PulseMacro-Setup-{#AppVersion}
 Compression=lzma2
 SolidCompression=yes
 WizardStyle=modern
@@ -27,12 +27,12 @@ Name: "english"; MessagesFile: "compiler:Default.isl"
 Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{cm:AdditionalIcons}"; Flags: unchecked
 
 [Files]
-Source: "release\AutoClicker.exe"; DestDir: "{app}"; Flags: ignoreversion
+Source: "release\PulseMacro.exe"; DestDir: "{app}"; Flags: ignoreversion
 Source: "LICENSE"; DestDir: "{app}"; Flags: ignoreversion
 
 [Icons]
-Name: "{group}\Makro"; Filename: "{app}\AutoClicker.exe"
-Name: "{autodesktop}\Makro"; Filename: "{app}\AutoClicker.exe"; Tasks: desktopicon
+Name: "{group}\{#AppName}"; Filename: "{app}\PulseMacro.exe"
+Name: "{autodesktop}\{#AppName}"; Filename: "{app}\PulseMacro.exe"; Tasks: desktopicon
 
 [Run]
-Filename: "{app}\AutoClicker.exe"; Description: "{cm:LaunchProgram,Makro}"; Flags: nowait postinstall skipifsilent
+Filename: "{app}\PulseMacro.exe"; Description: "{cm:LaunchProgram,{#AppName}}"; Flags: nowait postinstall skipifsilent
