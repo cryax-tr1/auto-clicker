@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import math
 import queue
 import re
 import sys
@@ -31,7 +32,7 @@ DEFAULT_INSTALL_DIR = (
     if sys.platform.startswith("win")
     else Path.home() / ".auto-clicker"
 )
-APP_VERSION = "1.0.1"
+APP_VERSION = "1.0.2"
 GITHUB_REPOSITORY = "cryax-tr1/auto-clicker"
 LATEST_RELEASE_API = (
     f"https://api.github.com/repos/{GITHUB_REPOSITORY}/releases/latest"
@@ -110,13 +111,10 @@ def _load_settings() -> dict[str, Any]:
 
 
 def _save_settings(data: dict[str, Any]) -> None:
-    try:
-        SETTINGS_FILE.write_text(
-            json.dumps(data, ensure_ascii=False, indent=2),
-            encoding="utf-8",
-        )
-    except OSError:
-        pass
+    SETTINGS_FILE.write_text(
+        json.dumps(data, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
 
 
 class InstallerWizard:
@@ -282,7 +280,15 @@ class InstallerWizard:
             "completed": True,
         }
         settings["hotkeys"] = settings.get("hotkeys", DEFAULT_HOTKEYS)
-        _save_settings(settings)
+        try:
+            _save_settings(settings)
+        except OSError as exc:
+            messagebox.showerror(
+                "Ayarlar kaydedilemedi",
+                f"Kurulum ayarları dosyaya yazılamadı:\n{SETTINGS_FILE}\n\n{exc}",
+                parent=self.root,
+            )
+            return
 
         summary = (
             f"Dil: {('Türkçe' if self.language_var.get() == 'tr' else 'English')}\n"
@@ -403,7 +409,28 @@ class AutoClickerApp:
             if current_key is None or latest_key is None:
                 raise ValueError("Sürüm numarası x.y.z biçiminde olmalı.")
             if latest_key > current_key:
-                self._update_events.put(("available", version, release_url))
+                download_url = release_url
+                assets = release.get("assets")
+                if isinstance(assets, list):
+                    expected_download_prefix = (
+                        f"https://github.com/{GITHUB_REPOSITORY}/releases/"
+                        f"download/{version}/"
+                    )
+                    for asset in assets:
+                        if not isinstance(asset, dict):
+                            continue
+                        name = asset.get("name")
+                        url = asset.get("browser_download_url")
+                        if (
+                            isinstance(name, str)
+                            and name.startswith("Makro-Setup-")
+                            and name.endswith(".exe")
+                            and isinstance(url, str)
+                            and url.startswith(expected_download_prefix)
+                        ):
+                            download_url = url
+                            break
+                self._update_events.put(("available", version, download_url))
             else:
                 self._update_events.put(("current", version, release_url))
         except urllib.error.HTTPError as exc:
@@ -425,17 +452,32 @@ class AutoClickerApp:
         if self._closing or not self.root.winfo_exists():
             return
         if result == "available":
+            is_installer = "/releases/download/" in release_url
             should_open = messagebox.askyesno(
                 "Güncelleme bulundu",
                 (
                     f"Makro için yeni sürüm ({version}) yayınlandı.\n"
                     f"Yüklü sürüm: {APP_VERSION}\n\n"
-                    "GitHub sürüm sayfasını açmak ister misin?"
+                    f"Çalışan programın konumu: {APP_DIR}\n\n"
+                    + (
+                        "En yeni kurulum dosyası açılacak. İndirme tamamlanınca "
+                        "Makro-Setup dosyasını çalıştırıp mevcut sürümün üzerine "
+                        "kur.\n\n"
+                        if is_installer
+                        else "GitHub sürüm sayfası açılacak. En yeni Makro-Setup "
+                        "dosyasını indirip çalıştır.\n\n"
+                    )
+                    + "Devam edilsin mi?"
                 ),
                 parent=self.root,
             )
             if should_open:
-                webbrowser.open(release_url)
+                if not webbrowser.open(release_url):
+                    messagebox.showerror(
+                        "Güncelleme bağlantısı açılamadı",
+                        f"Bağlantı varsayılan tarayıcıda açılamadı:\n{release_url}",
+                        parent=self.root,
+                    )
         elif result == "error":
             self.status_var.set("Güncelleme kontrolü başarısız oldu; sonra tekrar dene.")
 
@@ -857,7 +899,7 @@ class AutoClickerApp:
         )
         discord_link = ttk.Label(
             title_block,
-            text="Discord: discord.gg/QvVYQfbcT",
+            text=f"Discord: {DISCORD_INVITE_URL}",
             style="HeaderLink.TLabel",
             cursor="hand2",
         )
@@ -908,7 +950,7 @@ class AutoClickerApp:
         )
         ttk.Label(
             self.sidebar,
-            text="SYSTEM ONLINE\nNEON UI  /  v1.0",
+            text=f"SYSTEM ONLINE\nNEON UI  /  v{APP_VERSION}",
             style="SidebarCaption.TLabel",
             justify="left",
         ).pack(anchor="w", padx=8, pady=(2, 6))
@@ -1975,28 +2017,57 @@ class AutoClickerApp:
     def _validate_macro(data: Any) -> tuple[list[dict[str, Any]], float]:
         if not isinstance(data, dict) or data.get("format") != "auto-clicker-macro":
             raise ValueError("Dosya geçerli bir Makro kaydı değil.")
-        if data.get("version") != 1 or not isinstance(data.get("events"), list):
+        version = data.get("version")
+        if (
+            isinstance(version, bool)
+            or version != 1
+            or not isinstance(data.get("events"), list)
+        ):
             raise ValueError("Makro dosyasının sürümü veya biçimi desteklenmiyor.")
-        duration = data.get("duration", 0)
-        if not isinstance(duration, (int, float)) or duration < 0:
-            raise ValueError("Makro süresi geçersiz.")
+
+        def finite_number(value: Any, description: str) -> float:
+            if isinstance(value, bool) or not isinstance(value, (int, float)):
+                raise ValueError(f"{description} geçersiz.")
+            try:
+                normalized = float(value)
+            except OverflowError as exc:
+                raise ValueError(f"{description} geçersiz.") from exc
+            if not math.isfinite(normalized) or normalized < 0:
+                raise ValueError(f"{description} geçersiz.")
+            return normalized
+
+        has_duration = "duration" in data
+        duration = (
+            finite_number(data["duration"], "Makro süresi")
+            if has_duration
+            else None
+        )
         events = data["events"]
+        last_timestamp = 0.0
         for event in events:
             if not isinstance(event, dict):
                 raise ValueError("Makroda geçersiz olay var.")
-            timestamp = event.get("time")
-            if not isinstance(timestamp, (int, float)) or timestamp < 0:
-                raise ValueError("Makroda geçersiz olay zamanı var.")
+            timestamp = finite_number(event.get("time"), "Makro olay zamanı")
+            if timestamp < last_timestamp:
+                raise ValueError("Makro olayları zaman sırasına göre olmalı.")
+            if duration is not None and timestamp > duration:
+                raise ValueError("Makro olayı kayıt süresinin dışına taşıyor.")
+            last_timestamp = timestamp
             event_type = event.get("type")
             if event_type == "move":
-                if not isinstance(event.get("x"), int) or not isinstance(
-                    event.get("y"), int
+                if (
+                    not isinstance(event.get("x"), int)
+                    or isinstance(event.get("x"), bool)
+                    or not isinstance(event.get("y"), int)
+                    or isinstance(event.get("y"), bool)
                 ):
                     raise ValueError("Makroda geçersiz fare konumu var.")
             elif event_type == "click":
                 if (
                     not isinstance(event.get("x"), int)
+                    or isinstance(event.get("x"), bool)
                     or not isinstance(event.get("y"), int)
+                    or isinstance(event.get("y"), bool)
                     or event.get("button") not in ("left", "right", "middle")
                     or not isinstance(event.get("pressed"), bool)
                 ):
@@ -2012,13 +2083,15 @@ class AutoClickerApp:
                     or (key_data["kind"] == "char" and len(key_data["value"]) != 1)
                     or (
                         key_data["kind"] == "special"
-                        and not hasattr(Key, key_data["value"])
+                        and not isinstance(
+                            getattr(Key, key_data["value"].lower(), None), Key
+                        )
                     )
                 ):
                     raise ValueError("Makroda geçersiz klavye tuşu var.")
             else:
                 raise ValueError("Makroda tanınmayan olay türü var.")
-        return events, float(duration)
+        return events, duration if duration is not None else last_timestamp
 
     def _load_selected_macro(self) -> bool:
         path = self._selected_path()

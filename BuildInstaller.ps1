@@ -15,13 +15,18 @@ if (-not $compiler) {
 }
 
 $scriptDirectory = Split-Path -Parent $MyInvocation.MyCommand.Path
+$distExePath = Join-Path $scriptDirectory "dist\AutoClicker.exe"
 $exePath = Join-Path $scriptDirectory "release\AutoClicker.exe"
-if (-not (Test-Path $exePath)) {
-    throw "Application EXE was not found: $exePath"
+if (-not (Test-Path $distExePath)) {
+    throw "PyInstaller output was not found: $distExePath. Build AutoClicker.spec first."
 }
 
 Push-Location $scriptDirectory
 try {
+    $releaseDirectory = Split-Path -Parent $exePath
+    New-Item -ItemType Directory -Path $releaseDirectory -Force | Out-Null
+    Copy-Item -LiteralPath $distExePath -Destination $exePath -Force
+
     & $compiler "AutoClicker.iss"
     if ($LASTEXITCODE -ne 0) {
         throw "Inno Setup compilation failed (exit code $LASTEXITCODE)."
