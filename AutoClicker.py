@@ -38,7 +38,7 @@ DEFAULT_INSTALL_DIR = (
     else Path.home() / ".auto-clicker"
 )
 APP_NAME = "PulseMacro Studio"
-APP_VERSION = "1.1.2"
+APP_VERSION = "1.1.3"
 GITHUB_REPOSITORY = "cryax-tr1/auto-clicker"
 LATEST_RELEASE_API = (
     f"https://api.github.com/repos/{GITHUB_REPOSITORY}/releases/latest"
@@ -2179,7 +2179,7 @@ class AutoClickerApp:
         self._append_event({"type": "move", "x": position[0], "y": position[1]})
 
     def _on_click(self, x: int, y: int, button: Button, pressed: bool) -> None:
-        if not self._inside_window(x, y):
+        if button.name in ("left", "right", "middle"):
             self._append_event(
                 {
                     "type": "click",
