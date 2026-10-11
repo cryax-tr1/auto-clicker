@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import ctypes
 import json
 import math
 import os
@@ -345,6 +346,7 @@ class AutoClickerApp:
         self.hotkey_listener: keyboard.Listener | None = None
         self._hotkey_events: queue.SimpleQueue[tuple[str, str]] = queue.SimpleQueue()
         self._recording_count_events: queue.SimpleQueue[int] = queue.SimpleQueue()
+        self._click_error_events: queue.SimpleQueue[str] = queue.SimpleQueue()
         self._update_events: queue.SimpleQueue[tuple[str, str, str]] = queue.SimpleQueue()
         self.pressed_keys: set[str] = set()
         self.capture_hotkey: str | None = None
@@ -366,6 +368,8 @@ class AutoClickerApp:
         self.click_token = 0
         self.click_loop = False
         self.click_button: Button | None = None
+        self.click_stop_event = threading.Event()
+        self.click_count_lock = threading.Lock()
         self.click_count = 0
         self.app_started = time.perf_counter()
         self.macro_event_total = 0
@@ -1209,7 +1213,8 @@ class AutoClickerApp:
         except ValueError:
             rate = "— CPS"
         self.click_rate_var.set(rate)
-        self.click_total_var.set(str(self.click_count))
+        click_count = self._click_count_value()
+        self.click_total_var.set(str(click_count))
         self.telemetry_vars["Fare olayları"].set(
             str(self.event_counts["click"] + self.event_counts["move"])
         )
@@ -1217,7 +1222,7 @@ class AutoClickerApp:
         self.telemetry_vars["Makro olayları"].set(str(len(self.play_events)))
         self.dashboard_readouts["Durum"].set(state)
         self.dashboard_readouts["Makro sayısı"].set(str(len(self.recording_files)))
-        self.dashboard_readouts["Oturum tıklaması"].set(str(self.click_count))
+        self.dashboard_readouts["Oturum tıklaması"].set(str(click_count))
         self.dashboard_readouts["Tıklama hızı"].set(rate)
         self._update_statistics_values()
         self.root.after(500, self._refresh_live_dashboard)
@@ -1270,25 +1275,33 @@ class AutoClickerApp:
 
         list_frame = ttk.Frame(card, style="Card.TFrame")
         list_frame.pack(fill="both", expand=True, pady=(0, 2))
-        self.recording_list = tk.Listbox(
+        self.recording_canvas = tk.Canvas(
             list_frame,
-            height=6,
             bg="#071722",
-            fg="#e8eefb",
-            selectbackground="#087a9a",
-            selectforeground="#ffffff",
             highlightthickness=0,
-            selectborderwidth=0,
-            relief="flat",
-            activestyle="none",
-            font=("Segoe UI", 11),
             borderwidth=0,
-            exportselection=False,
-            takefocus=True,
         )
-        self.recording_list.pack(side="left", fill="both", expand=True)
+        self.recording_canvas.pack(side="left", fill="both", expand=True)
+        self.recording_rows_frame = ttk.Frame(
+            self.recording_canvas, style="Card.TFrame"
+        )
+        self.recording_rows_window = self.recording_canvas.create_window(
+            (0, 0), window=self.recording_rows_frame, anchor="nw"
+        )
+        self.recording_rows_frame.bind(
+            "<Configure>",
+            lambda event: self.recording_canvas.configure(
+                scrollregion=(0, 0, event.width, event.height)
+            ),
+        )
+        self.recording_canvas.bind(
+            "<Configure>",
+            lambda event: self.recording_canvas.itemconfigure(
+                self.recording_rows_window, width=event.width
+            ),
+        )
         self.empty_recordings_label = ttk.Label(
-            list_frame,
+            self.recording_canvas,
             text="Henüz makro kaydı yok\nBir tane oluşturmak için “Kaydı başlat”a bas.",
             style="Hint.TLabel",
             anchor="center",
@@ -1296,12 +1309,13 @@ class AutoClickerApp:
         )
         self.empty_recordings_label.place(relx=0.5, rely=0.5, anchor="center")
         scrollbar = ttk.Scrollbar(
-            list_frame, orient="vertical", command=self.recording_list.yview
+            list_frame, orient="vertical", command=self.recording_canvas.yview
         )
         scrollbar.pack(side="right", fill="y")
-        self.recording_list.configure(yscrollcommand=scrollbar.set)
-        self.recording_list.bind("<<ListboxSelect>>", self._select_recording)
+        self.recording_canvas.configure(yscrollcommand=scrollbar.set)
         self.recording_files: list[Path] = []
+        self.selected_recording_path: Path | None = None
+        self.recording_row_buttons: dict[Path, ttk.Button] = {}
 
         ttk.Separator(card, orient="horizontal").pack(fill="x", pady=(14, 13))
         ttk.Label(
@@ -1352,23 +1366,9 @@ class AutoClickerApp:
             style="Quiet.TButton",
             command=self.open_recordings_directory,
         )
-        self.recordings_folder_button.grid(row=0, column=0, sticky="ew", padx=(0, 4), pady=3)
-        self.open_selected_button = ttk.Button(
-            library_actions,
-            text="Dosyayı aç",
-            style="Quiet.TButton",
-            command=self.open_selected_recording,
-            state="disabled",
+        self.recordings_folder_button.grid(
+            row=0, column=0, sticky="ew", padx=(0, 4), pady=3
         )
-        self.open_selected_button.grid(row=0, column=1, sticky="ew", padx=4, pady=3)
-        self.delete_selected_button = ttk.Button(
-            library_actions,
-            text="Kaydı sil",
-            style="Stop.TButton",
-            command=self.delete_selected_recording,
-            state="disabled",
-        )
-        self.delete_selected_button.grid(row=0, column=2, sticky="ew", padx=(4, 0), pady=3)
 
         click_card = self._create_hud_panel(
             library_column,
@@ -1630,7 +1630,7 @@ class AutoClickerApp:
             "Kayıtlı makro": str(len(self.recording_files)),
             "Toplam makro olayı": str(self.macro_event_total),
             "Okunamayan makro": str(self.invalid_macro_count),
-            "Bu oturum tıklaması": str(self.click_count),
+            "Bu oturum tıklaması": str(self._click_count_value()),
             "Seçili makro": selected_path.stem if selected_path else "—",
             "Seçili makro olayı": selected_events,
             "Geçen oturum süresi": f"{hours:02d}:{minutes:02d}:{seconds:02d}",
@@ -1638,6 +1638,10 @@ class AutoClickerApp:
         }
         for label, value in values.items():
             self.statistics_vars[label].set(value)
+
+    def _click_count_value(self) -> int:
+        with self.click_count_lock:
+            return self.click_count
     def _build_settings_tab(self) -> None:
         card = self._create_hud_panel(
             self.settings_tab, "CONTROL PANEL // HOTKEY MATRIX", height=490
@@ -1812,6 +1816,13 @@ class AutoClickerApp:
             return
         while True:
             try:
+                error = self._click_error_events.get_nowait()
+            except queue.Empty:
+                break
+            self.stop_clicking()
+            messagebox.showerror("Tıklama başarısız", error, parent=self.root)
+        while True:
+            try:
                 count = self._recording_count_events.get_nowait()
             except queue.Empty:
                 break
@@ -1918,34 +1929,56 @@ class AutoClickerApp:
         count = len(files)
         self.recording_count_var.set(f"{count} KAYIT" if count != 1 else "1 KAYIT")
         self._recalculate_macro_statistics()
-        self.recording_list.delete(0, tk.END)
+        for row in self.recording_rows_frame.winfo_children():
+            row.destroy()
+        self.recording_row_buttons.clear()
         for path in files:
-            self.recording_list.insert(tk.END, path.stem)
+            row = ttk.Frame(
+                self.recording_rows_frame, style="Card.TFrame", padding=(5, 3)
+            )
+            row.pack(fill="x", pady=1)
+            name_button = ttk.Button(
+                row,
+                text=path.stem,
+                style="Quiet.TButton",
+                command=lambda selected=path: self._select_recording_path(selected),
+            )
+            name_button.pack(side="left", fill="x", expand=True, padx=(0, 5))
+            ttk.Button(
+                row,
+                text="Dosyaya git",
+                style="Quiet.TButton",
+                command=lambda selected=path: self.open_recording_location(selected),
+            ).pack(side="left", padx=(0, 4))
+            ttk.Button(
+                row,
+                text="Sil",
+                style="Stop.TButton",
+                command=lambda selected=path: self.delete_selected_recording(
+                    selected
+                ),
+            ).pack(side="left")
+            self.recording_row_buttons[path] = name_button
         if files:
             self.empty_recordings_label.place_forget()
         else:
             self.empty_recordings_label.place(relx=0.5, rely=0.5, anchor="center")
         if select in files:
-            index = files.index(select)
-            self.recording_list.selection_set(index)
-            self.recording_list.activate(index)
-            self._select_recording()
-        elif files and not self.recording_list.curselection():
-            self.recording_list.selection_set(0)
-            self._select_recording()
-        if not files:
-            self._select_recording()
-            self.play_button.configure(state="disabled")
-            self.loop_button.configure(state="disabled")
+            self.selected_recording_path = select
+        elif self.selected_recording_path not in files:
+            self.selected_recording_path = files[0] if files else None
+        self._select_recording()
+
+    def _select_recording_path(self, path: Path) -> None:
+        if path not in self.recording_files:
+            return
+        self.selected_recording_path = path
+        self._select_recording()
 
     def _selected_path(self) -> Path | None:
-        selected = self.recording_list.curselection()
-        if not selected:
+        if self.selected_recording_path not in self.recording_files:
             return None
-        index = selected[0]
-        if index >= len(self.recording_files):
-            return None
-        return self.recording_files[index]
+        return self.selected_recording_path
 
     def _recalculate_macro_statistics(self) -> None:
         self.macro_event_total = 0
@@ -1967,8 +2000,10 @@ class AutoClickerApp:
         enabled = path is not None
         self.play_button.configure(state="normal" if enabled else "disabled")
         self.loop_button.configure(state="normal" if enabled else "disabled")
-        self.open_selected_button.configure(state="normal" if enabled else "disabled")
-        self.delete_selected_button.configure(state="normal" if enabled else "disabled")
+        for row_path, button in self.recording_row_buttons.items():
+            button.configure(
+                style="Accent.TButton" if row_path == path else "Quiet.TButton"
+            )
         self.selected_macro_event_count = None
         if path is not None:
             try:
@@ -2014,15 +2049,31 @@ class AutoClickerApp:
         RECORDINGS_DIR.mkdir(parents=True, exist_ok=True)
         self._open_path(RECORDINGS_DIR)
 
-    def open_selected_recording(self) -> None:
-        path = self._selected_path()
-        if path is None:
-            self.status_var.set("Önce listeden bir kayıt seç.")
+    def open_recording_location(self, path: Path) -> None:
+        if not path.is_file():
+            messagebox.showerror(
+                "Kayıt bulunamadı",
+                f"{path.name} dosyası bulunamadı.",
+                parent=self.root,
+            )
+            self._refresh_recording_list()
             return
-        self._open_path(path)
+        try:
+            if sys.platform.startswith("win"):
+                subprocess.Popen(["explorer", f"/select,{path}"])
+            elif sys.platform == "darwin":
+                subprocess.Popen(["open", "-R", str(path)])
+            else:
+                subprocess.Popen(["xdg-open", str(path.parent)])
+        except OSError as exc:
+            messagebox.showerror(
+                "Dosya konumu açılamadı",
+                f"{path.parent} açılamadı:\n{exc}",
+                parent=self.root,
+            )
 
-    def delete_selected_recording(self) -> None:
-        path = self._selected_path()
+    def delete_selected_recording(self, path: Path | None = None) -> None:
+        path = path or self._selected_path()
         if path is None:
             self.status_var.set("Önce silinecek bir kayıt seç.")
             return
@@ -2520,12 +2571,8 @@ class AutoClickerApp:
         self.status_var.set(status)
 
     @staticmethod
-    def _click_mouse_button(button: Button, *, hold_ms: int = 20) -> None:
-        controller = mouse.Controller()
-        controller.press(button)
-        if hold_ms > 0:
-            time.sleep(hold_ms / 1000.0)
-        controller.release(button)
+    def _click_mouse_button(button: Button) -> None:
+        mouse.Controller().click(button)
 
     def toggle_clicking(self) -> None:
         if self.click_loop:
@@ -2556,34 +2603,76 @@ class AutoClickerApp:
         self.click_button = Button.left if self.button_var.get() == "left" else Button.right
         self.click_loop = True
         self.click_token += 1
+        self.click_stop_event.clear()
         self._update_hotkey_button_labels()
         self.status_var.set(
             f"Sürekli {self.button_var.get()} tıklama başladı. Durdurmak için "
             f"{self.hotkeys['click_loop']} veya {self.hotkeys['stop']}."
         )
-        self._perform_click(self.click_token, interval)
-
-    def _perform_click(self, token: int, interval: int) -> None:
-        if (
-            token != self.click_token
-            or not self.click_loop
-            or self.click_button is None
-            or not self.root.winfo_exists()
-        ):
-            return
+        worker = threading.Thread(
+            target=self._perform_click,
+            args=(self.click_token, interval, self.click_button),
+            name="AutoClickerWorker",
+            daemon=True,
+        )
         try:
-            self._click_mouse_button(self.click_button, hold_ms=20)
-        except Exception as exc:
+            worker.start()
+        except RuntimeError as exc:
             self.stop_clicking()
-            if self.root.winfo_exists():
-                messagebox.showerror("Tıklama başarısız", str(exc), parent=self.root)
-            return
-        self.click_count += 1
-        self.root.after(interval, self._perform_click, token, interval)
+            messagebox.showerror(
+                "Tıklama başlatılamadı", str(exc), parent=self.root
+            )
+
+    def _perform_click(self, token: int, interval: int, button: Button) -> None:
+        interval_seconds = interval / 1000.0
+        next_click_at = time.perf_counter()
+        winmm: Any | None = None
+        timer_resolution_active = False
+        try:
+            if sys.platform.startswith("win"):
+                winmm = ctypes.WinDLL("winmm")
+                result = winmm.timeBeginPeriod(1)
+                if result != 0:
+                    raise OSError(
+                        f"Windows zamanlayıcı hassasiyeti etkinleştirilemedi "
+                        f"(kod {result})."
+                    )
+                timer_resolution_active = True
+            while (
+                token == self.click_token
+                and self.click_loop
+                and not self.click_stop_event.is_set()
+            ):
+                self._click_mouse_button(button)
+                with self.click_count_lock:
+                    self.click_count += 1
+                next_click_at += interval_seconds
+                delay = next_click_at - time.perf_counter()
+                if delay > 0 and self.click_stop_event.wait(delay):
+                    return
+                if delay <= 0:
+                    next_click_at = time.perf_counter()
+        except Exception as exc:
+            self._click_error_events.put(str(exc))
+            self.click_stop_event.set()
+        finally:
+            if timer_resolution_active and winmm is not None:
+                try:
+                    result = winmm.timeEndPeriod(1)
+                    if result != 0:
+                        self._click_error_events.put(
+                            "Windows zamanlayıcı hassasiyeti kapatılamadı "
+                            f"(kod {result})."
+                        )
+                except Exception as exc:
+                    self._click_error_events.put(
+                        f"Windows zamanlayıcı hassasiyeti kapatılamadı: {exc}"
+                    )
 
     def stop_clicking(self) -> None:
         was_clicking = self.click_loop
         self.click_token += 1
+        self.click_stop_event.set()
         self.click_loop = False
         self.click_button = None
         self._update_hotkey_button_labels()
