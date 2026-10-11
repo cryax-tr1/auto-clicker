@@ -38,7 +38,7 @@ DEFAULT_INSTALL_DIR = (
     else Path.home() / ".auto-clicker"
 )
 APP_NAME = "PulseMacro Studio"
-APP_VERSION = "1.1.1"
+APP_VERSION = "1.1.2"
 GITHUB_REPOSITORY = "cryax-tr1/auto-clicker"
 LATEST_RELEASE_API = (
     f"https://api.github.com/repos/{GITHUB_REPOSITORY}/releases/latest"
