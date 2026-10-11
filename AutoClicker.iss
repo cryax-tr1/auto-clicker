@@ -1,5 +1,5 @@
 #define AppName "PulseMacro Studio"
-#define AppVersion "1.1.2"
+#define AppVersion "1.1.3"
 #define AppPublisher "Aras"
 
 [Setup]
